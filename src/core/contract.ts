@@ -6,7 +6,7 @@ export const delegateTaskSchema = z.object({
     instruction: z.string(),
     parameters: z.record(z.string()).optional()
   }),
-  expect_result_type: z.enum(["text","image_base64","json","none"])
+  expect_result_type: z.enum(["text","image_base64","json","none"]).default("text").optional()
 });
 export type DelegateTaskInput = z.infer<typeof delegateTaskSchema>;
 
