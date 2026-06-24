@@ -6,6 +6,7 @@ import { sanitizeFilename, isCommandSafe } from "./contract";
 import { emitLog } from "./eventBus";
 import { insertTask, completeTask } from "./blackboard";
 import { randomUUID } from "crypto";
+import { execRagMemory } from "../agents/ragMemory";
 
 const execAsync = promisify(exec);
 
@@ -21,6 +22,7 @@ export async function executeTask(agentTarget: string, actionPayload: any): Prom
       case "file_reader": result = await execFileReader(actionPayload); break;
       case "grep_search": result = await execGrepSearch(actionPayload); break;
       case "glob_search": result = await execGlobSearch(actionPayload); break;
+      case "rag_memory": result = await execRagMemory(actionPayload); break;
       default: result = "Erreur: Agent " + agentTarget + " non implemente.";
     }
     completeTask(taskId, result);
@@ -184,3 +186,5 @@ async function execGlobSearch(payload: any): Promise<string> {
   emitLog("GlobSearch", "info", results.length + " fichier(s)");
   return results.length > 0 ? results.sort().join("\n") : "Aucun fichier trouve avec: " + pattern;
 }
+
+

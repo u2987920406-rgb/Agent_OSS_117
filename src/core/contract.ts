@@ -30,3 +30,4 @@ export function sanitizeFilename(filename: string): { safe: boolean; cleanName?:
   if (clean.length === 0) return { safe: false, reason: "Nom de fichier vide" };
   return { safe: true, cleanName: clean };
 }
+
