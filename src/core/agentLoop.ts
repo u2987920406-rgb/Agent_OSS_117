@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import "dotenv/config";
 import { delegateTaskSchema } from "./contract";
 import { executeTask } from "./taskExecutor";
-import { emitLog, eventBus } from "./eventBus";
+import { emitLog } from "./eventBus";
 import { buildContext } from "./contextBuilder";
 import { checkPermission } from "./permissions";
 
@@ -14,30 +14,49 @@ const model = process.env.BRAIN_MODEL || "gemma4:12b";
 
 function buildSystemPrompt(): string {
   return [
-    "Tu es l'Orchestrateur Principal d'OSS-117, un OS Agentique.",
-    "Tu n'as pas acces a internet ni au systeme de fichiers directement.",
-    "Pour accomplir une mission, decompose en etapes et utilise les outils.",
+    "Tu es OSS-117, l Orchestrateur d un OS Agentique.",
+    "Tu ne peux rien faire seul. Tu DOIS utiliser les outils pour agir.",
     "",
     buildContext(),
     "",
-    "OUTILS:",
-    "1. delegate_to_agent: envoie une tache a un agent specialise",
-    "   Agents: terminal_executor, code_writer, web_scraper, file_reader, grep_search, glob_search",
-    "   - terminal_executor: execute des commandes (dir, git, npm, node, echo, cat, findstr)",
-    "   - code_writer: cree un fichier (parameters: filename, content)",
-    "   - web_scraper: recupere une page web (parameters: url)",
-    "   - file_reader: lit un fichier (parameters: filename)",
-    "   - grep_search: cherche du texte (parameters: pattern)",
-    "   - glob_search: trouve des fichiers par extension (parameters: pattern)",
+    "=== OUTILS ===",
     "",
-    "2. done: signale que la mission est accomplie (parameters: summary)",
+    "1. delegate_to_agent - Envoie une tache a un agent",
     "",
-    "REGLES:",
-    "- Une seule tache par appel d'outil",
-    "- Tu recevras le resultat de chaque tache, analyse-le avant de continuer",
-    "- Si une tache echoue, essaie une autre approche",
-    "- Utilise l'outil done quand la mission est complete",
-    "- Pour code_writer, mets TOUJOURS le nom du fichier dans parameters.filename et le contenu dans parameters.content"
+    "AGENTS ET EXEMPLES D UTILISATION:",
+    "",
+    "--- code_writer: Cree un fichier ---",
+    'EXEMPLE: {"agent_target":"code_writer","action_payload":{"instruction":"Cree un fichier hello.ts","parameters":{"filename":"hello.ts","content":"console.log(\'Hello\');"}},"expect_result_type":"text"}',
+    "IMPORTANT: Mets TOUJOURS le nom du fichier dans parameters.filename et le contenu dans parameters.content",
+    "",
+    "--- terminal_executor: Execute une commande ---",
+    'EXEMPLE: {"agent_target":"terminal_executor","action_payload":{"instruction":"dir"},"expect_result_type":"text"}',
+    "Commandes autorisees: dir, ls, echo, cat, git, npm, node, findstr, curl, mkdir, cp, mv",
+    "",
+    "--- file_reader: Lit un fichier ---",
+    'EXEMPLE: {"agent_target":"file_reader","action_payload":{"instruction":"Lis package.json","parameters":{"filename":"package.json"}},"expect_result_type":"text"}',
+    "IMPORTANT: Mets TOUJOURS le nom du fichier dans parameters.filename",
+    "",
+    "--- web_scraper: Recupere une page web ---",
+    'EXEMPLE: {"agent_target":"web_scraper","action_payload":{"instruction":"Scrape https://example.com","parameters":{"url":"https://example.com"}},"expect_result_type":"json"}',
+    "IMPORTANT: Mets TOUJOURS l URL dans parameters.url",
+    "",
+    "--- grep_search: Cherche du texte dans les fichiers ---",
+    'EXEMPLE: {"agent_target":"grep_search","action_payload":{"instruction":"Cherche la fonction agentLoop","parameters":{"pattern":"agentLoop"}},"expect_result_type":"text"}',
+    "",
+    "--- glob_search: Trouve des fichiers par extension ---",
+    'EXEMPLE: {"agent_target":"glob_search","action_payload":{"instruction":"Trouve les fichiers .ts","parameters":{"pattern":"\\.ts$"}},"expect_result_type":"text"}',
+    "",
+    "2. done - Signale la fin de mission",
+    'EXEMPLE: {"summary":"J ai cree le fichier et verifie le contenu."}',
+    "",
+    "=== REGLES ===",
+    "1. Une seule tache par appel d outil",
+    "2. Tu recevras le resultat de chaque tache - ANALYSE-LE avant de continuer",
+    "3. Si une tache echoue, essaie une autre approche",
+    "4. REMPLIS TOUJOURS les parameters quand c est necessaire (filename, content, url, pattern)",
+    "5. Utilise done quand la mission est complete",
+    "6. NEVER respond with just text - ALWAYS use a tool"
   ].join("\n");
 }
 
@@ -59,15 +78,20 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
         tools: [
           { type: "function", function: {
             name: "delegate_to_agent",
-            description: "Envoie une tache a un agent specialise",
+            description: "Envoie une tache a un agent. REMPLIS parameters avec filename/content/url/pattern selon l agent.",
             parameters: { type: "object", properties: {
-              agent_target: { type: "string", enum: ["terminal_executor","web_scraper","code_writer","file_reader","grep_search","glob_search"] },
+              agent_target: { type: "string", enum: ["terminal_executor","code_writer","web_scraper","file_reader","grep_search","glob_search"] },
               action_payload: { type: "object", properties: {
-                instruction: { type: "string" },
-                parameters: { type: "object", description: "Parametres: filename, content, url, pattern" }
+                instruction: { type: "string", description: "Description de la tache" },
+                parameters: { type: "object", description: "filename, content, url, pattern selon l agent", properties: {
+                  filename: { type: "string" },
+                  content: { type: "string" },
+                  url: { type: "string" },
+                  pattern: { type: "string" }
+                } }
               }, required: ["instruction"] },
-              expect_result_type: { type: "string", enum: ["text","json","none"] }
-            }, required: ["agent_target","action_payload","expect_result_type"] }
+              expect_result_type: { type: "string", enum: ["text","json","none"], description: "Type de resultat attendu" }
+            }, required: ["agent_target","action_payload"] }
           }},
           { type: "function", function: {
             name: "done",
@@ -83,7 +107,6 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
       return "Erreur: " + error.message;
     }
 
-    // Cas 1: tool calls
     if (response.tool_calls && response.tool_calls.length > 0) {
       for (const toolCall of response.tool_calls) {
         if (toolCall.function.name === "done") {
@@ -92,63 +115,42 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
           emitLog("Loop", "info", "Mission accomplie: " + (args.summary || "").substring(0, 100));
           return args.summary || "Mission terminee.";
         }
-
         if (toolCall.function.name === "delegate_to_agent") {
           let args: any;
           try { args = JSON.parse(toolCall.function.arguments); }
           catch {
-            emitLog("Loop", "warn", "JSON invalide du cerveau.");
             messages.push({ role: "assistant", content: response.content, tool_calls: response.tool_calls });
             messages.push({ role: "tool", tool_call_id: toolCall.id, content: "Erreur: JSON invalide" });
             continue;
           }
-
           const validation = delegateTaskSchema.safeParse(args);
           if (!validation.success) {
-            emitLog("Loop", "warn", "Tache invalide: " + JSON.stringify(validation.error.format()).substring(0, 100));
             messages.push({ role: "assistant", content: response.content, tool_calls: response.tool_calls });
-            messages.push({ role: "tool", tool_call_id: toolCall.id, content: "Erreur validation: " + JSON.stringify(validation.error.format()) });
+            messages.push({ role: "tool", tool_call_id: toolCall.id, content: "Erreur: " + JSON.stringify(validation.error.format()) + ". Reessaie en remplissant tous les champs requis." });
             continue;
           }
-
           emitLog("Cerveau", "info", "-> " + args.agent_target + ": " + args.action_payload.instruction.substring(0, 60));
-
-          // Permission check (auto pour l'instant)
           const perm = checkPermission(args.agent_target);
-          if (perm.needsApproval) {
-            emitLog("Permission", "info", "Auto-approuve (mode " + perm.action + ")");
-          }
-
-          // Executer
+          if (perm.needsApproval) emitLog("Permission", "info", "Auto-approuve (" + perm.action + ")");
           const result = await executeTask(args.agent_target, args.action_payload);
-
-          // Feed back
-          messages.push({
-            role: "assistant",
-            content: response.content,
-            tool_calls: [{ id: toolCall.id, type: "function", function: { name: toolCall.function.name, arguments: toolCall.function.arguments } }]
-          });
+          messages.push({ role: "assistant", content: response.content, tool_calls: [{ id: toolCall.id, type: "function", function: { name: toolCall.function.name, arguments: toolCall.function.arguments } }] });
           messages.push({ role: "tool", tool_call_id: toolCall.id, content: result.substring(0, 8000) });
-
           emitLog("Loop", "info", "Resultat recu (" + result.length + " chars), continuation...");
         }
       }
       continue;
     }
 
-    // Cas 2: reponse texte sans outil
     if (response.content && response.content.trim().length > 0) {
-      emitLog("Loop", "info", "Reponse texte du cerveau. Fin.");
+      emitLog("Loop", "info", "Reponse texte. Fin.");
       return response.content;
     }
 
-    // Cas 3: reponse vide - relancer avec un prompt
     emitLog("Loop", "warn", "Reponse vide. Relance...");
     messages.push({ role: "assistant", content: "" });
-    messages.push({ role: "user", content: "Continue ta mission. Utilise delegate_to_agent ou done." });
+    messages.push({ role: "user", content: "Continue. Utilise delegate_to_agent ou done." });
     continue;
   }
-
   emitLog("Loop", "warn", "Limite de " + maxTurns + " tours atteinte.");
   return "Limite de tours atteinte.";
 }
