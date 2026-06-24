@@ -6,6 +6,7 @@ import { sanitizeFilename, isCommandSafe } from "./contract";
 import { emitLog } from "./eventBus";
 import { insertTask, completeTask } from "./blackboard";
 import { vectorStore } from "./vectorStore";
+import { execBrowserEyes } from "../agents/browserEyes";
 import { randomUUID } from "crypto";
 
 const execAsync = promisify(exec);
@@ -68,6 +69,7 @@ async function execCodeWriter(payload: any): Promise<string> {
   if (!path.resolve(targetPath).startsWith(path.resolve(process.cwd()))) return "Erreur: hors dossier travail.";
   const dir = path.dirname(targetPath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  content = content.replace(/\\n/g, String.fromCharCode(10)).replace(/\\t/g, String.fromCharCode(9));
   fs.writeFileSync(targetPath, content, "utf-8");
   emitLog("CodeWriter", "info", "Fichier cree: " + check.cleanName + " (" + content.length + " chars)");
   return "Succes: Fichier " + check.cleanName + " cree (" + content.length + " chars).";
@@ -167,4 +169,6 @@ async function execGlobSearch(payload: any): Promise<string> {
   emitLog("GlobSearch", "info", results.length + " fichier(s)");
   return results.length > 0 ? results.sort().join("\n") : "Aucun fichier trouve avec: " + pattern;
 }
+
+
 

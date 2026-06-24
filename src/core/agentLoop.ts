@@ -22,18 +22,21 @@ function buildSystemPrompt(): string {
     buildContext(),
     "",
     "=== OUTILS ===",
-    "1. delegate_to_agent: terminal_executor, code_writer, web_scraper, file_reader, grep_search, glob_search, rag_memory",
-    "   - code_writer: parameters.filename + parameters.content",
-    "   - file_reader: parameters.filename",
-    "   - web_scraper: parameters.url",
-    "   - grep_search: parameters.pattern",
-    "   - glob_search: parameters.pattern (regex ex: \\.ts$)",
-    "   - rag_memory: parameters.action (store/search/count/clear) + parameters.text",
-    "   - terminal_executor: commandes autorisees (dir, ls, echo, cat, git, npm, node, findstr)",
-    "2. done: signale la fin (summary)",
+    "1. delegate_to_agent: envoie une tache a un agent specialise",
+    "   Agents disponibles:",
+    "   - terminal_executor: execute des commandes (dir, ls, git, npm, node, echo, findstr)",
+    "   - code_writer: cree un fichier (parameters: filename, content)",
+    "   - web_scraper: scrape une page web (parameters: url)",
+    "   - file_reader: lit un fichier (parameters: filename)",
+    "   - grep_search: cherche du texte (parameters: pattern)",
+    "   - glob_search: trouve des fichiers (parameters: pattern regex)",
+    "   - rag_memory: memoire vectorielle (parameters: action=store/search/count, text)",
+    "   - browser_eyes: capture d ecran + liste fenetres (parameters: action=screenshot/windowlist)",
+    "",
+    "2. done: signale la fin de mission (parameters: summary)",
     "",
     "REGLES:",
-    "1. Une tache par appel",
+    "1. Une seule tache par appel",
     "2. Analyse le resultat recu avant de continuer",
     "3. Remplis TOUJOURS les parameters necessaires",
     "4. Utilise done quand la mission est complete",
@@ -72,7 +75,7 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
             name: "delegate_to_agent",
             description: "Envoie une tache a un agent specialise",
             parameters: { type: "object", properties: {
-              agent_target: { type: "string", enum: ["terminal_executor","code_writer","web_scraper","file_reader","grep_search","glob_search","rag_memory", "browser_eyes"],
+              agent_target: { type: "string", enum: ["terminal_executor","code_writer","web_scraper","file_reader","grep_search","glob_search","rag_memory","browser_eyes"] },
               action_payload: { type: "object", properties: {
                 instruction: { type: "string" },
                 parameters: { type: "object", properties: {
@@ -136,18 +139,12 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
       emitLog("Loop", "info", "Reponse texte. Fin.");
       return response.content;
     }
-
-    // Reponse vide
     emptyCount++;
     emitLog("Loop", "warn", "Reponse vide (" + emptyCount + "/3)");
-    if (emptyCount >= 3) {
-      emitLog("Loop", "info", "Trop de reponses vides. Fin de mission.");
-      return "Mission terminee (reponses vides repetees).";
-    }
-    messages.push({ role: "user", content: "La tache precedente est terminee. Utilise l outil done avec un resume, ou delegate_to_agent pour continuer." });
+    if (emptyCount >= 3) { emitLog("Loop", "info", "Trop de reponses vides. Fin."); return "Mission terminee (reponses vides)."; }
+    messages.push({ role: "user", content: "La tache precedente est terminee. Utilise done ou delegate_to_agent." });
     continue;
   }
   emitLog("Loop", "warn", "Limite de " + maxTurns + " tours atteinte.");
   return "Limite de tours atteinte.";
 }
-
