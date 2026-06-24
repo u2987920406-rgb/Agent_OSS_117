@@ -6,6 +6,8 @@ import "dotenv/config";
 import { eventBus, EVENT_CHANNELS } from "./core/eventBus";
 import { getAllTasks, getLogs } from "./core/blackboard";
 import { agentLoop } from "./core/agentLoop";
+import { setPermissionLevel, getPermissionLevel, resolvePermission } from "./core/permissions";
+import type { PermissionLevel } from "./core/permissions";
 
 const app = express();
 const server = http.createServer(app);
@@ -18,15 +20,29 @@ app.get("/api/health", (_req, res) => res.json({ status: "ok", uptime: process.u
 app.get("/api/tasks", (_req, res) => res.json(getAllTasks()));
 app.get("/api/logs", (req, res) => res.json(getLogs(parseInt(req.query.limit as string) || 50)));
 
+app.get("/api/permissions", (_req, res) => res.json({ level: getPermissionLevel() }));
+app.post("/api/permissions", (req, res) => {
+  const { level } = req.body as { level: PermissionLevel };
+  if (["strict", "normal", "auto"].includes(level)) {
+    setPermissionLevel(level);
+    res.json({ success: true, level });
+  } else {
+    res.status(400).json({ error: "Niveau invalide (strict, normal, auto)" });
+  }
+});
+app.post("/api/permissions/resolve", (req, res) => {
+  const { taskId, approved } = req.body;
+  resolvePermission(taskId, approved);
+  res.json({ success: true });
+});
+
 app.post("/api/brain", async (req, res) => {
   const { prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: "Champ prompt requis." });
   try {
     const result = await agentLoop(prompt);
     res.json({ success: true, result });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
 });
 
 wss.on("connection", (ws) => {

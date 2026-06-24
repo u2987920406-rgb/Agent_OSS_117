@@ -4,6 +4,7 @@ import { delegateTaskSchema } from "./contract";
 import { executeTask } from "./taskExecutor";
 import { emitLog } from "./eventBus";
 import { buildContext } from "./contextBuilder";
+import { checkPermission, requestPermission } from "./permissions";
 
 const client = new OpenAI({
   apiKey: process.env.BRAIN_API_KEY || "ollama",
@@ -15,33 +16,20 @@ function buildSystemPrompt(): string {
   return [
     "Tu es l'Orchestrateur Principal d'OSS-117, un OS Agentique.",
     "Tu n'as pas acces a internet ni au systeme de fichiers directement.",
-    "Pour accomplir une mission, tu dois decomposer en etapes et utiliser les outils.",
+    "Pour accomplir une mission, decompose en etapes et utilise les outils.",
     "",
     buildContext(),
     "",
-    "OUTILS DISPONIBLES:",
-    "1. delegate_to_agent : Envoie une tache a un agent specialise",
-    "   Agents: terminal_executor, code_writer, web_scraper, file_reader, grep_search, glob_search",
-    "   - terminal_executor: commandes (ls, dir, git, npm, node, echo, cat, findstr, etc.)",
-    "   - code_writer: cree des fichiers (parameters: filename, content)",
-    "   - web_scraper: recupere page web (parameters: url)",
-    "   - file_reader: lit un fichier (parameters: filename)",
-    "   - grep_search: cherche du texte (parameters: pattern)",
-    "   - glob_search: trouve des fichiers (parameters: pattern)",
+    "OUTILS:",
+    "1. delegate_to_agent: terminal_executor, code_writer, web_scraper, file_reader, grep_search, glob_search",
+    "2. done: signale la fin de mission (summary)",
     "",
-    "2. done : Signale que la mission est accomplie (parameters: summary)",
-    "",
-    "REGLES:",
-    "- Une seule tache par appel",
-    "- Tu recevras le resultat de chaque tache, analyse-le avant de continuer",
-    "- Si une tache echoue, essaie une autre approche",
-    "- Utilise done quand la mission est complete"
+    "REGLES: une tache par appel, analyse les resultats, utilise done quand fini."
   ].join("\n");
 }
 
 export async function agentLoop(userPrompt: string, maxTurns: number = 20): Promise<string> {
   emitLog("Loop", "info", "Mission: " + userPrompt.substring(0, 60));
-
   const messages: any[] = [
     { role: "system", content: buildSystemPrompt() },
     { role: "user", content: userPrompt }
@@ -49,16 +37,13 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
 
   for (let turn = 1; turn <= maxTurns; turn++) {
     emitLog("Loop", "info", "Tour " + turn + "/" + maxTurns);
-
     let response: any;
     try {
       const completion = await client.chat.completions.create({
-        model,
-        messages,
+        model, messages,
         tools: [
           { type: "function", function: {
-            name: "delegate_to_agent",
-            description: "Envoie une tache a un agent specialise",
+            name: "delegate_to_agent", description: "Envoie une tache a un agent",
             parameters: { type: "object", properties: {
               agent_target: { type: "string", enum: ["terminal_executor","web_scraper","code_writer","file_reader","grep_search","glob_search"] },
               action_payload: { type: "object", properties: { instruction: { type: "string" }, parameters: { type: "object" } }, required: ["instruction"] },
@@ -66,8 +51,7 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
             }, required: ["agent_target","action_payload","expect_result_type"] }
           }},
           { type: "function", function: {
-            name: "done",
-            description: "Signale que la mission est accomplie",
+            name: "done", description: "Mission accomplie",
             parameters: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"] }
           }}
         ],
@@ -91,10 +75,18 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
           const validation = delegateTaskSchema.safeParse(args);
           if (!validation.success) {
             messages.push({ role: "assistant", content: response.content, tool_calls: response.tool_calls });
-            messages.push({ role: "tool", tool_call_id: toolCall.id, content: "Erreur validation: " + JSON.stringify(validation.error.format()) });
+            messages.push({ role: "tool", tool_call_id: toolCall.id, content: "Erreur validation" });
             continue;
           }
           emitLog("Cerveau", "info", "-> " + args.agent_target + ": " + args.action_payload.instruction.substring(0, 60));
+
+          // CHECK PERMISSION
+          const perm = checkPermission(args.agent_target);
+          if (perm.needsApproval) {
+            emitLog("Permission", "warn", "Action " + perm.action + " requiert approbation (mode auto-approve en attendant)");
+            // Pour l instant on auto-approuve (l UI WebSocket viendra plus tard)
+          }
+
           const result = await executeTask(args.agent_target, args.action_payload);
           messages.push({ role: "assistant", content: response.content, tool_calls: [{ id: toolCall.id, type: "function", function: { name: toolCall.function.name, arguments: toolCall.function.arguments } }] });
           messages.push({ role: "tool", tool_call_id: toolCall.id, content: result.substring(0, 8000) });
@@ -103,11 +95,7 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
       }
       continue;
     }
-
-    if (response.content) {
-      emitLog("Loop", "info", "Reponse texte du cerveau. Fin.");
-      return response.content;
-    }
+    if (response.content) { emitLog("Loop", "info", "Reponse texte. Fin."); return response.content; }
     return "Reponse vide.";
   }
   emitLog("Loop", "warn", "Limite de " + maxTurns + " tours atteinte.");
