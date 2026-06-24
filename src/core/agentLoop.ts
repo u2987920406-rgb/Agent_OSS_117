@@ -12,6 +12,7 @@ const client = new OpenAI({
   baseURL: process.env.BRAIN_BASE_URL || "http://localhost:11434/v1"
 });
 const model = process.env.BRAIN_MODEL || "gemma4:12b";
+const OLLAMA_URL = (process.env.BRAIN_BASE_URL || "http://localhost:11434/v1").replace("/v1", "");
 
 function buildSystemPrompt(): string {
   return [
@@ -24,43 +25,60 @@ function buildSystemPrompt(): string {
     "",
     "1. delegate_to_agent - Envoie une tache a un agent",
     "",
-    "AGENTS ET EXEMPLES D UTILISATION:",
+    "AGENTS ET EXEMPLES:",
     "",
     "--- code_writer: Cree un fichier ---",
-    'EXEMPLE: {"agent_target":"code_writer","action_payload":{"instruction":"Cree un fichier hello.ts","parameters":{"filename":"hello.ts","content":"console.log(\'Hello\');"}},"expect_result_type":"text"}',
+    "EXEMPLE: agent_target=code_writer, parameters.filename=hello.ts, parameters.content=console.log('Hello')",
     "IMPORTANT: Mets TOUJOURS le nom du fichier dans parameters.filename et le contenu dans parameters.content",
     "",
     "--- terminal_executor: Execute une commande ---",
-    'EXEMPLE: {"agent_target":"terminal_executor","action_payload":{"instruction":"dir"},"expect_result_type":"text"}',
     "Commandes autorisees: dir, ls, echo, cat, git, npm, node, findstr, curl, mkdir, cp, mv",
     "",
     "--- file_reader: Lit un fichier ---",
-    'EXEMPLE: {"agent_target":"file_reader","action_payload":{"instruction":"Lis package.json","parameters":{"filename":"package.json"}},"expect_result_type":"text"}',
-    "IMPORTANT: Mets TOUJOURS le nom du fichier dans parameters.filename",
+    "IMPORTANT: Mets le nom du fichier dans parameters.filename",
     "",
     "--- web_scraper: Recupere une page web ---",
-    'EXEMPLE: {"agent_target":"web_scraper","action_payload":{"instruction":"Scrape https://example.com","parameters":{"url":"https://example.com"}},"expect_result_type":"json"}',
-    "IMPORTANT: Mets TOUJOURS l URL dans parameters.url",
+    "IMPORTANT: Mets l URL dans parameters.url",
     "",
-    "--- grep_search: Cherche du texte dans les fichiers ---",
-    'EXEMPLE: {"agent_target":"grep_search","action_payload":{"instruction":"Cherche la fonction agentLoop","parameters":{"pattern":"agentLoop"}},"expect_result_type":"text"}',
+    "--- grep_search: Cherche du texte ---",
+    "Mets le pattern dans parameters.pattern",
     "",
     "--- glob_search: Trouve des fichiers par extension ---",
-    'EXEMPLE: {"agent_target":"glob_search","action_payload":{"instruction":"Trouve les fichiers .ts","parameters":{"pattern":"\\.ts$"}},"expect_result_type":"text"}',
+    "Mets le pattern regex dans parameters.pattern (ex: \\.ts$)",
     "",
-    "2. done - Signale la fin de mission",
-    'EXEMPLE: {"summary":"J ai cree le fichier et verifie le contenu."}',
+    "--- rag_memory: Memoire vectorielle ---",
+    "action=store pour memoriser, action=search pour chercher, action=count pour compter",
+    "Mets le texte dans parameters.text et l action dans parameters.action",
+    "",
+    "2. done - Signale la fin de mission (summary)",
     "",
     "=== REGLES ===",
     "1. Une seule tache par appel d outil",
     "2. Tu recevras le resultat de chaque tache - ANALYSE-LE avant de continuer",
     "3. Si une tache echoue, essaie une autre approche",
-    "4. REMPLIS TOUJOURS les parameters quand c est necessaire (filename, content, url, pattern)",
+    "4. REMPLIS TOUJOURS les parameters (filename, content, url, pattern, action, text)",
     "5. Utilise done quand la mission est complete",
-    "6. NEVER respond with just text - ALWAYS use a tool
-7. Tu as une MEMOIRE RAG. Utilise rag_memory avec action=search pour te rappeler des taches passees
-8. Apres chaque mission, utilise rag_memory avec action=store pour memoriser le resume"
+    "6. Tu as une MEMOIRE RAG. Utilise rag_memory avec action=search pour te rappeler du passe",
+    "7. Apres une mission importante, utilise rag_memory avec action=store pour memoriser"
   ].join("\n");
+}
+
+async function autoMemory(agent: string, instruction: string, result: string): Promise<void> {
+  try {
+    const text = agent + ": " + instruction + " => " + result;
+    const res = await fetch(OLLAMA_URL + "/api/embeddings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "nomic-embed-text", prompt: text.substring(0, 2000) })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      vectorStore.add(text, data.embedding, { agent });
+      emitLog("AutoMemory", "info", "Resultat stocke en memoire RAG");
+    }
+  } catch (e: any) {
+    emitLog("AutoMemory", "warn", "Stockage RAG echoue");
+  }
 }
 
 export async function agentLoop(userPrompt: string, maxTurns: number = 20): Promise<string> {
@@ -81,19 +99,17 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
         tools: [
           { type: "function", function: {
             name: "delegate_to_agent",
-            description: "Envoie une tache a un agent. REMPLIS parameters avec filename/content/url/pattern selon l agent.",
+            description: "Envoie une tache a un agent specialise",
             parameters: { type: "object", properties: {
-              agent_target: { type: "string", enum: ["terminal_executor","code_writer","web_scraper","file_reader","grep_search","glob_search", "rag_memory"] },
+              agent_target: { type: "string", enum: ["terminal_executor","code_writer","web_scraper","file_reader","grep_search","glob_search","rag_memory"] },
               action_payload: { type: "object", properties: {
-                instruction: { type: "string", description: "Description de la tache" },
-                parameters: { type: "object", description: "filename, content, url, pattern selon l agent", properties: {
-                  filename: { type: "string" },
-                  content: { type: "string" },
-                  url: { type: "string" },
-                  pattern: { type: "string" }
-                } }
+                instruction: { type: "string" },
+                parameters: { type: "object", description: "filename, content, url, pattern, action, text", properties: {
+                  filename: { type: "string" }, content: { type: "string" }, url: { type: "string" },
+                  pattern: { type: "string" }, action: { type: "string" }, text: { type: "string" }
+                }}
               }, required: ["instruction"] },
-              expect_result_type: { type: "string", enum: ["text","json","none"], description: "Type de resultat attendu" }
+              expect_result_type: { type: "string", enum: ["text","json","none"] }
             }, required: ["agent_target","action_payload"] }
           }},
           { type: "function", function: {
@@ -129,22 +145,15 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
           const validation = delegateTaskSchema.safeParse(args);
           if (!validation.success) {
             messages.push({ role: "assistant", content: response.content, tool_calls: response.tool_calls });
-            messages.push({ role: "tool", tool_call_id: toolCall.id, content: "Erreur: " + JSON.stringify(validation.error.format()) + ". Reessaie en remplissant tous les champs requis." });
+            messages.push({ role: "tool", tool_call_id: toolCall.id, content: "Erreur validation. Reessaie en remplissant les champs requis." });
             continue;
           }
           emitLog("Cerveau", "info", "-> " + args.agent_target + ": " + args.action_payload.instruction.substring(0, 60));
           const perm = checkPermission(args.agent_target);
           if (perm.needsApproval) emitLog("Permission", "info", "Auto-approuve (" + perm.action + ")");
           const result = await executeTask(args.agent_target, args.action_payload);
-          // AUTO-MEMORY: stocker le resultat en memoire RAG
-          try {
-            const { exec } = require("child_process");
-            const embedRes = await fetch((process.env.BRAIN_BASE_URL || "http://localhost:11434").replace("/v1", "") + "/api/embeddings", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ model: "nomic-embed-text", prompt: (args.agent_target + ": " + args.action_payload.instruction + " => " + result).substring(0, 2000) })
-            });
-            if (embedRes.ok) { const embedData = await embedRes.json(); vectorStore.add(args.agent_target + ": " + result, embedData.embedding, { agent: args.agent_target }); emitLog("AutoMemory", "info", "Resultat stocke en memoire RAG"); }
-          } catch (e: any) { emitLog("AutoMemory", "warn", "Stockage RAG echoue: " + e.message); }
+          // AUTO-MEMORY
+          await autoMemory(args.agent_target, args.action_payload.instruction, result);
           messages.push({ role: "assistant", content: response.content, tool_calls: [{ id: toolCall.id, type: "function", function: { name: toolCall.function.name, arguments: toolCall.function.arguments } }] });
           messages.push({ role: "tool", tool_call_id: toolCall.id, content: result.substring(0, 8000) });
           emitLog("Loop", "info", "Resultat recu (" + result.length + " chars), continuation...");
@@ -157,7 +166,6 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
       emitLog("Loop", "info", "Reponse texte. Fin.");
       return response.content;
     }
-
     emitLog("Loop", "warn", "Reponse vide. Relance...");
     messages.push({ role: "assistant", content: "" });
     messages.push({ role: "user", content: "Continue. Utilise delegate_to_agent ou done." });
@@ -166,7 +174,3 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
   emitLog("Loop", "warn", "Limite de " + maxTurns + " tours atteinte.");
   return "Limite de tours atteinte.";
 }
-
-
-
-
