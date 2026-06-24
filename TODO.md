@@ -1,0 +1,1 @@
+une liste de 5 améliorations possibles pour le projet Agent OSS-117. Les améliorations doivent porter sur l'architecture multi-agent, la robustesse ou les fonctionnalités.
