@@ -16,6 +16,10 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 app.use(cors());
 app.use(express.json());
 
+app.get("/api/history", (_req, res) => {
+  const store = require("./core/vectorStore");
+  res.json({ count: store.vectorStore.count() });
+});
 app.get("/api/health", (_req, res) => res.json({ status: "ok", uptime: process.uptime() }));
 app.get("/api/tasks", (_req, res) => res.json(getAllTasks()));
 app.get("/api/logs", (req, res) => res.json(getLogs(parseInt(req.query.limit as string) || 50)));
@@ -59,3 +63,4 @@ server.listen(PORT, () => {
   console.log("Serveur API: http://localhost:" + PORT + "/api");
   console.log("WebSocket: ws://localhost:" + PORT + "/ws");
 });
+

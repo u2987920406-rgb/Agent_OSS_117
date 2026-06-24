@@ -57,7 +57,9 @@ function buildSystemPrompt(): string {
     "3. Si une tache echoue, essaie une autre approche",
     "4. REMPLIS TOUJOURS les parameters quand c est necessaire (filename, content, url, pattern)",
     "5. Utilise done quand la mission est complete",
-    "6. NEVER respond with just text - ALWAYS use a tool"
+    "6. NEVER respond with just text - ALWAYS use a tool
+7. Tu as une MEMOIRE RAG. Utilise rag_memory avec action=search pour te rappeler des taches passees
+8. Apres chaque mission, utilise rag_memory avec action=store pour memoriser le resume"
   ].join("\n");
 }
 
@@ -164,6 +166,7 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
   emitLog("Loop", "warn", "Limite de " + maxTurns + " tours atteinte.");
   return "Limite de tours atteinte.";
 }
+
 
 
 
