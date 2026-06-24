@@ -1,0 +1,5 @@
+node_modules/
+dist/
+agent_oss_117.json
+*.db
+.env
