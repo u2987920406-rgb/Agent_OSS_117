@@ -1,24 +1,21 @@
-import OpenAI from "openai";
 import "dotenv/config";
 import { eventBus, EVENT_CHANNELS, emitLog } from "./eventBus";
-import { auditTask, insertLog, getTask } from "./blackboard";
-
-const client = new OpenAI({
-  apiKey: process.env.BRAIN_API_KEY || "ollama",
-  baseURL: process.env.BRAIN_BASE_URL || "http://localhost:11434/v1"
-});
-const model = process.env.BRAIN_MODEL || "llama3.2";
+import { auditTask, insertLog, getTask, updateTaskStatus, completeTask } from "./blackboard";
 
 export function startGhostQA() {
   eventBus.on(EVENT_CHANNELS.TASK_COMPLETED, async (taskId: string, result: string) => {
     emitLog("GhostQA", "info", `Audit de la tache ${taskId.substring(0, 8)}...`);
     const task = getTask(taskId);
     if (!task) return;
-    const rawResult = result.substring(0, 4000);
+
+    // 1. Sauvegarder le resultat ET le statut COMPLETED
+    completeTask(taskId, result);
+
+    // 2. Audit
     try {
       const isFailure = result.toLowerCase().startsWith("erreur") || result.toLowerCase().startsWith("error");
       const qaStatus = isFailure ? "REJECTED" : "AUDITED";
-      const report = isFailure ? "Echec detecte." : "Validation OK (mode basique).";
+      const report = isFailure ? "Echec detecte dans le resultat." : "Validation OK (mode basique).";
       auditTask(taskId, qaStatus, report);
       insertLog(taskId, "ghost_qa", isFailure ? "WARN" : "INFO", report);
       emitLog("GhostQA", isFailure ? "warn" : "info", `${qaStatus} - ${report}`);
