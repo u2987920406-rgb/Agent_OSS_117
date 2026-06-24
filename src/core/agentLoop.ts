@@ -2,9 +2,9 @@ import OpenAI from "openai";
 import "dotenv/config";
 import { delegateTaskSchema } from "./contract";
 import { executeTask } from "./taskExecutor";
-import { emitLog } from "./eventBus";
+import { emitLog, eventBus, EVENT_CHANNELS } from "./eventBus";
 import { buildContext } from "./contextBuilder";
-import { checkPermission, requestPermission } from "./permissions";
+import { checkPermission } from "./permissions";
 
 const client = new OpenAI({
   apiKey: process.env.BRAIN_API_KEY || "ollama",
@@ -37,10 +37,14 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
 
   for (let turn = 1; turn <= maxTurns; turn++) {
     emitLog("Loop", "info", "Tour " + turn + "/" + maxTurns);
-    let response: any;
+
+    // STREAMING: accumuler les tokens
+    let fullContent = "";
+    let toolCalls: any[] = [];
+
     try {
-      const completion = await client.chat.completions.create({
-        model, messages,
+      const stream = await client.chat.completions.create({
+        model, messages, stream: true,
         tools: [
           { type: "function", function: {
             name: "delegate_to_agent", description: "Envoie une tache a un agent",
@@ -57,45 +61,66 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
         ],
         tool_choice: "auto"
       });
-      response = completion.choices[0].message;
+
+      // Consommer le stream
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta;
+        if (delta?.content) {
+          fullContent += delta.content;
+          // Emettre chaque token via eventBus pour le WebSocket
+          eventBus.emit("STREAM_TOKEN", { token: delta.content, turn });
+        }
+        if (delta?.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            if (!toolCalls[tc.index]) toolCalls[tc.index] = { id: tc.id, type: "function", function: { name: "", arguments: "" } };
+            if (tc.function?.name) toolCalls[tc.index].function.name += tc.function.name;
+            if (tc.function?.arguments) toolCalls[tc.index].function.arguments += tc.function.arguments;
+          }
+        }
+      }
     } catch (error: any) {
       emitLog("Loop", "error", "Erreur API: " + error.message);
       return "Erreur: " + error.message;
     }
 
-    if (response.tool_calls && response.tool_calls.length > 0) {
-      for (const toolCall of response.tool_calls) {
+    // Construire le message assistant
+    const assistantMsg: any = { role: "assistant", content: fullContent || null };
+    if (toolCalls.length > 0) {
+      assistantMsg.tool_calls = toolCalls.filter(tc => tc && tc.function.name);
+    }
+
+    // Traiter les tool calls
+    if (toolCalls.length > 0 && toolCalls.some(tc => tc && tc.function.name)) {
+      for (const toolCall of toolCalls.filter(tc => tc && tc.function.name)) {
         if (toolCall.function.name === "done") {
           const args = JSON.parse(toolCall.function.arguments);
           emitLog("Loop", "info", "Mission accomplie: " + args.summary);
+          eventBus.emit("STREAM_DONE", { summary: args.summary });
           return args.summary;
         }
         if (toolCall.function.name === "delegate_to_agent") {
           const args = JSON.parse(toolCall.function.arguments);
           const validation = delegateTaskSchema.safeParse(args);
           if (!validation.success) {
-            messages.push({ role: "assistant", content: response.content, tool_calls: response.tool_calls });
+            messages.push(assistantMsg);
             messages.push({ role: "tool", tool_call_id: toolCall.id, content: "Erreur validation" });
             continue;
           }
           emitLog("Cerveau", "info", "-> " + args.agent_target + ": " + args.action_payload.instruction.substring(0, 60));
-
-          // CHECK PERMISSION
-          const perm = checkPermission(args.agent_target);
-          if (perm.needsApproval) {
-            emitLog("Permission", "warn", "Action " + perm.action + " requiert approbation (mode auto-approve en attendant)");
-            // Pour l instant on auto-approuve (l UI WebSocket viendra plus tard)
-          }
-
           const result = await executeTask(args.agent_target, args.action_payload);
-          messages.push({ role: "assistant", content: response.content, tool_calls: [{ id: toolCall.id, type: "function", function: { name: toolCall.function.name, arguments: toolCall.function.arguments } }] });
+          messages.push({ role: "assistant", content: fullContent || null, tool_calls: [toolCall] });
           messages.push({ role: "tool", tool_call_id: toolCall.id, content: result.substring(0, 8000) });
           emitLog("Loop", "info", "Resultat recu, continuation...");
         }
       }
       continue;
     }
-    if (response.content) { emitLog("Loop", "info", "Reponse texte. Fin."); return response.content; }
+
+    if (fullContent) {
+      emitLog("Loop", "info", "Reponse texte du cerveau. Fin.");
+      eventBus.emit("STREAM_DONE", { summary: fullContent });
+      return fullContent;
+    }
     return "Reponse vide.";
   }
   emitLog("Loop", "warn", "Limite de " + maxTurns + " tours atteinte.");
