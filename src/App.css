@@ -12,11 +12,16 @@ body { background: #0d0d0d; color: #e0e0e0; font-family: Consolas, monospace; fo
 .log-line { font-size: 12px; line-height: 1.6; }
 .log-time { color: #555; font-size: 11px; }
 .log-agent { color: #e94560; font-weight: bold; }
+.stream-text { font-size: 13px; color: #51cf66; padding: 8px; background: rgba(81,207,102,0.05); border-radius: 4px; margin-bottom: 8px; line-height: 1.6; }
+.cursor { animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: 0; } }
 .input-area { display: flex; gap: 6px; }
 .input-area input { flex: 1; background: #1a1a2e; border: 1px solid #2a2a4a; color: #e0e0e0; padding: 8px; border-radius: 4px; font-family: inherit; }
 .input-area input:focus { border-color: #e94560; outline: none; }
+.input-area input:disabled { opacity: 0.5; }
 .input-area button { background: #e94560; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
-.input-area button:hover { background: #c73e54; }
+.input-area button:hover:not(:disabled) { background: #c73e54; }
+.input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
 .task-list { flex: 1; overflow-y: auto; padding: 8px; background: #0a0a0a; border-radius: 4px; }
 .task-item { background: #1a1a2e; border-left: 3px solid #333; border-radius: 4px; padding: 10px; margin-bottom: 8px; }
 .task-item.pending { border-left-color: #4a9eff; } .task-item.running { border-left-color: #feca57; } .task-item.completed { border-left-color: #51cf66; }
@@ -24,6 +29,7 @@ body { background: #0d0d0d; color: #e0e0e0; font-family: Consolas, monospace; fo
 .task-agent { color: #e94560; font-weight: bold; font-size: 12px; }
 .badge { font-size: 10px; padding: 2px 6px; border-radius: 3px; background: #333; }
 .task-payload { font-size: 11px; color: #888; }
+.task-result { font-size: 11px; color: #51cf66; padding-top: 4px; border-top: 1px solid #1a1a2e; }
 .agent-list { display: flex; flex-direction: column; gap: 8px; padding: 8px; background: #0a0a0a; border-radius: 4px; }
 .agent-card { display: flex; justify-content: space-between; padding: 10px; background: #1a1a2e; border-radius: 4px; font-size: 12px; }
 .agent-card .active { color: #51cf66; }
