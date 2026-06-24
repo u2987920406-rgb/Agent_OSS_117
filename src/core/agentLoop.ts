@@ -5,6 +5,7 @@ import { executeTask } from "./taskExecutor";
 import { emitLog } from "./eventBus";
 import { buildContext } from "./contextBuilder";
 import { checkPermission } from "./permissions";
+import { vectorStore } from "./vectorStore";
 
 const client = new OpenAI({
   apiKey: process.env.BRAIN_API_KEY || "ollama",
@@ -133,6 +134,15 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
           const perm = checkPermission(args.agent_target);
           if (perm.needsApproval) emitLog("Permission", "info", "Auto-approuve (" + perm.action + ")");
           const result = await executeTask(args.agent_target, args.action_payload);
+          // AUTO-MEMORY: stocker le resultat en memoire RAG
+          try {
+            const { exec } = require("child_process");
+            const embedRes = await fetch((process.env.BRAIN_BASE_URL || "http://localhost:11434").replace("/v1", "") + "/api/embeddings", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: "nomic-embed-text", prompt: (args.agent_target + ": " + args.action_payload.instruction + " => " + result).substring(0, 2000) })
+            });
+            if (embedRes.ok) { const embedData = await embedRes.json(); vectorStore.add(args.agent_target + ": " + result, embedData.embedding, { agent: args.agent_target }); emitLog("AutoMemory", "info", "Resultat stocke en memoire RAG"); }
+          } catch (e: any) { emitLog("AutoMemory", "warn", "Stockage RAG echoue: " + e.message); }
           messages.push({ role: "assistant", content: response.content, tool_calls: [{ id: toolCall.id, type: "function", function: { name: toolCall.function.name, arguments: toolCall.function.arguments } }] });
           messages.push({ role: "tool", tool_call_id: toolCall.id, content: result.substring(0, 8000) });
           emitLog("Loop", "info", "Resultat recu (" + result.length + " chars), continuation...");
@@ -154,5 +164,6 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
   emitLog("Loop", "warn", "Limite de " + maxTurns + " tours atteinte.");
   return "Limite de tours atteinte.";
 }
+
 
 
