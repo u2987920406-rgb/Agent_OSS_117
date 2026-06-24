@@ -72,7 +72,7 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
             name: "delegate_to_agent",
             description: "Envoie une tache a un agent specialise",
             parameters: { type: "object", properties: {
-              agent_target: { type: "string", enum: ["terminal_executor","code_writer","web_scraper","file_reader","grep_search","glob_search","rag_memory"] },
+              agent_target: { type: "string", enum: ["terminal_executor","code_writer","web_scraper","file_reader","grep_search","glob_search","rag_memory", "browser_eyes"],
               action_payload: { type: "object", properties: {
                 instruction: { type: "string" },
                 parameters: { type: "object", properties: {
@@ -150,3 +150,4 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
   emitLog("Loop", "warn", "Limite de " + maxTurns + " tours atteinte.");
   return "Limite de tours atteinte.";
 }
+

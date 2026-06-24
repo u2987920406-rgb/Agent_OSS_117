@@ -1,0 +1,1 @@
+const express = require('express');\nconst app = express();\nconst port = 8080;\\n\\napp.get('/', (req, res) => {\n  res.send('Hello');\n});\\n\\napp.listen(port, () => {\n  console.log(`Serveur démarré sur http://localhost:${port}`);\n});

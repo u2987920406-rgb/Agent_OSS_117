@@ -23,6 +23,7 @@ export async function executeTask(agentTarget: string, actionPayload: any): Prom
       case "grep_search": result = await execGrepSearch(actionPayload); break;
       case "glob_search": result = await execGlobSearch(actionPayload); break;
       case "rag_memory": result = await execRagMemory(actionPayload); break;
+      case "browser_eyes": result = await execBrowserEyes(actionPayload); break;
       default: result = "Erreur: Agent " + agentTarget + " non implemente.";
     }
     completeTask(taskId, result);
@@ -166,3 +167,4 @@ async function execGlobSearch(payload: any): Promise<string> {
   emitLog("GlobSearch", "info", results.length + " fichier(s)");
   return results.length > 0 ? results.sort().join("\n") : "Aucun fichier trouve avec: " + pattern;
 }
+
