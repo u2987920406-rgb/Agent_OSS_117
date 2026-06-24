@@ -3,8 +3,7 @@ import "dotenv/config";
 import { delegateTaskSchema } from "./contract";
 import { executeTask } from "./taskExecutor";
 import { emitLog } from "./eventBus";
-import { insertLog } from "./blackboard";
-import { randomUUID } from "crypto";
+import { buildContext } from "./contextBuilder";
 
 const client = new OpenAI({
   apiKey: process.env.BRAIN_API_KEY || "ollama",
@@ -18,30 +17,31 @@ function buildSystemPrompt(): string {
     "Tu n'as pas acces a internet ni au systeme de fichiers directement.",
     "Pour accomplir une mission, tu dois decomposer en etapes et utiliser les outils.",
     "",
+    buildContext(),
+    "",
     "OUTILS DISPONIBLES:",
     "1. delegate_to_agent : Envoie une tache a un agent specialise",
     "   Agents: terminal_executor, code_writer, web_scraper, file_reader, grep_search, glob_search",
-    "   - terminal_executor: execute des commandes (ls, dir, git, npm, node, echo, cat, etc.)",
+    "   - terminal_executor: commandes (ls, dir, git, npm, node, echo, cat, findstr, etc.)",
     "   - code_writer: cree des fichiers (parameters: filename, content)",
-    "   - web_scraper: recupere une page web (parameters: url ou URL dans instruction)",
+    "   - web_scraper: recupere page web (parameters: url)",
     "   - file_reader: lit un fichier (parameters: filename)",
-    "   - grep_search: cherche du texte dans les fichiers (parameters: pattern)",
-    "   - glob_search: trouve des fichiers par pattern (parameters: pattern)",
+    "   - grep_search: cherche du texte (parameters: pattern)",
+    "   - glob_search: trouve des fichiers (parameters: pattern)",
     "",
-    "2. done : Signale que la mission est accomplie",
-    "   Utilise cet outil avec un resume quand tu as fini.",
+    "2. done : Signale que la mission est accomplie (parameters: summary)",
     "",
     "REGLES:",
-    "- Une seule tache par appel d'outil",
-    "- Tu recevras le resultat de chaque tache - analyse-le avant de continuer",
+    "- Une seule tache par appel",
+    "- Tu recevras le resultat de chaque tache, analyse-le avant de continuer",
     "- Si une tache echoue, essaie une autre approche",
-    - "Quand la mission est complete, utilise l'outil done"
+    "- Utilise done quand la mission est complete"
   ].join("\n");
 }
 
 export async function agentLoop(userPrompt: string, maxTurns: number = 20): Promise<string> {
-  emitLog("Loop", "info", "Demarrage de la mission: " + userPrompt.substring(0, 60));
-  
+  emitLog("Loop", "info", "Mission: " + userPrompt.substring(0, 60));
+
   const messages: any[] = [
     { role: "system", content: buildSystemPrompt() },
     { role: "user", content: userPrompt }
@@ -56,43 +56,20 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
         model,
         messages,
         tools: [
-          {
-            type: "function",
-            function: {
-              name: "delegate_to_agent",
-              description: "Envoie une tache a un agent specialise",
-              parameters: {
-                type: "object",
-                properties: {
-                  agent_target: { type: "string", enum: ["terminal_executor","web_scraper","code_writer","file_reader","grep_search","glob_search"] },
-                  action_payload: {
-                    type: "object",
-                    properties: {
-                      instruction: { type: "string" },
-                      parameters: { type: "object", description: "Parametres optionnels (filename, content, url, pattern)" }
-                    },
-                    required: ["instruction"]
-                  },
-                  expect_result_type: { type: "string", enum: ["text","json","none"] }
-                },
-                required: ["agent_target","action_payload","expect_result_type"]
-              }
-            }
-          },
-          {
-            type: "function",
-            function: {
-              name: "done",
-              description: "Signale que la mission est accomplie",
-              parameters: {
-                type: "object",
-                properties: {
-                  summary: { type: "string", description: "Resume de ce qui a ete accompli" }
-                },
-                required: ["summary"]
-              }
-            }
-          }
+          { type: "function", function: {
+            name: "delegate_to_agent",
+            description: "Envoie une tache a un agent specialise",
+            parameters: { type: "object", properties: {
+              agent_target: { type: "string", enum: ["terminal_executor","web_scraper","code_writer","file_reader","grep_search","glob_search"] },
+              action_payload: { type: "object", properties: { instruction: { type: "string" }, parameters: { type: "object" } }, required: ["instruction"] },
+              expect_result_type: { type: "string", enum: ["text","json","none"] }
+            }, required: ["agent_target","action_payload","expect_result_type"] }
+          }},
+          { type: "function", function: {
+            name: "done",
+            description: "Signale que la mission est accomplie",
+            parameters: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"] }
+          }}
         ],
         tool_choice: "auto"
       });
@@ -102,7 +79,6 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
       return "Erreur: " + error.message;
     }
 
-    // Cas 1: Le cerveau a utilise un outil
     if (response.tool_calls && response.tool_calls.length > 0) {
       for (const toolCall of response.tool_calls) {
         if (toolCall.function.name === "done") {
@@ -110,52 +86,30 @@ export async function agentLoop(userPrompt: string, maxTurns: number = 20): Prom
           emitLog("Loop", "info", "Mission accomplie: " + args.summary);
           return args.summary;
         }
-
         if (toolCall.function.name === "delegate_to_agent") {
-          let args: any;
-          try { args = JSON.parse(toolCall.function.arguments); } catch {
-            args = JSON.parse(toolCall.function.arguments);
-          }
-
-          // Validation Zod
+          const args = JSON.parse(toolCall.function.arguments);
           const validation = delegateTaskSchema.safeParse(args);
           if (!validation.success) {
-            emitLog("Loop", "warn", "Tache invalide rejetee.");
             messages.push({ role: "assistant", content: response.content, tool_calls: response.tool_calls });
             messages.push({ role: "tool", tool_call_id: toolCall.id, content: "Erreur validation: " + JSON.stringify(validation.error.format()) });
             continue;
           }
-
-          emitLog("Cerveau", "info", "Delegation a " + args.agent_target + ": " + args.action_payload.instruction.substring(0, 60));
-
-          // Executer la tache
+          emitLog("Cerveau", "info", "-> " + args.agent_target + ": " + args.action_payload.instruction.substring(0, 60));
           const result = await executeTask(args.agent_target, args.action_payload);
-
-          // Feed back au cerveau
-          messages.push({
-            role: "assistant",
-            content: response.content,
-            tool_calls: [{ id: toolCall.id, type: "function", function: { name: toolCall.function.name, arguments: toolCall.function.arguments } }]
-          });
+          messages.push({ role: "assistant", content: response.content, tool_calls: [{ id: toolCall.id, type: "function", function: { name: toolCall.function.name, arguments: toolCall.function.arguments } }] });
           messages.push({ role: "tool", tool_call_id: toolCall.id, content: result.substring(0, 8000) });
-
-          emitLog("Loop", "info", "Resultat recu, le cerveau continue...");
+          emitLog("Loop", "info", "Resultat recu, continuation...");
         }
       }
       continue;
     }
 
-    // Cas 2: Le cerveau a repondu sans outil
     if (response.content) {
-      emitLog("Loop", "info", "Cerveau a repondu sans outil. Fin de mission.");
+      emitLog("Loop", "info", "Reponse texte du cerveau. Fin.");
       return response.content;
     }
-
-    // Cas 3: Reponse vide
-    emitLog("Loop", "warn", "Reponse vide. Fin de mission.");
-    return "Reponse vide du cerveau.";
+    return "Reponse vide.";
   }
-
   emitLog("Loop", "warn", "Limite de " + maxTurns + " tours atteinte.");
-  return "Limite de tours atteinte. Dernier etat: mission incomplete.";
+  return "Limite de tours atteinte.";
 }
